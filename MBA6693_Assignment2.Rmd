@@ -1,0 +1,218 @@
+---
+title: "MBA6693 - Assignment 2"
+author: "David M. Kilfoil"
+date: "8/6/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+This exercise will use the Fredericton Traffic Accident open data set: http://data-fredericton.opendata.arcgis.com/datasets/traffic-accidents-accidents-de-la-circulation?selectedAttribute=Severity.
+
+While this dataset already has several categorical variables, some additional variables will be added. The point of this exercise is to determine if creating new categories or bins from the existing dataset can make it easier to predict when severe accidents are more likely to happen in Fredericton, which would also indicate for drivers the times to be more careful driving in Fredericton.
+
+
+```{r include=FALSE}
+## Import/Install libraries
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+library(Information)
+library(tidyverse) 
+```
+
+## Fredericton Traffic Accidents dataframe
+```{r echo=FALSE}
+Traffic_Accidents <- read.csv("~/MBA6693/Traffic_Accidents___Accidents_de_la_circulation.csv")
+view(Traffic_Accidents)
+str(Traffic_Accidents)
+```
+
+```{r echo=FALSE}
+attach(Traffic_Accidents)
+```
+
+```{r include=FALSE}
+# Checking for outliers in Month_
+Traffic_Accidents$Month_ %>%
+  quantile(seq(0,1, 0.01))
+# Actual values of the outlier
+boxplot(Traffic_Accidents$Month_)$out
+# Assign the outlier values into a vector
+outliers <- boxplot(Traffic_Accidents$Month_, plot=FALSE)$out
+# Check the results
+print(outliers)
+# Find in which rows the outlier(s) are
+Traffic_Accidents[which(Traffic_Accidents$Month_ %in% outliers),]
+# Remove the rows containing the outliers
+Traffic_Accidents <- Traffic_Accidents[-which(Traffic_Accidents$Month_ %in% outliers),]
+# Verify with boxplot
+boxplot(Traffic_Accidents$Month_)
+```
+
+```{r echo=FALSE }
+# Creating 4 Season Brackets
+# Season Bracket Function
+season_bin <- function(Month_ = 0){
+  if(Month_ >= 1 && Month_ <=2)
+    return ("Winter")
+  else if(Month_ >= 3 && Month_ <=5)
+    return ("Spring")
+  else if(Month_ >= 6 && Month_ <=8)
+    return ("Summer")
+  else if(Month_ >= 9 && Month_ <=11)
+    return ("Autumn")
+  else if(Month_ == 12)
+    return ("Winter")
+ }
+
+# Add Season column to dataset
+Traffic_Accidents$Season <-  Traffic_Accidents$Month_ %>%
+  lapply(season_bin)
+Traffic_Accidents$Season <- factor(Traffic_Accidents$Season, levels=c("Winter","Spring", "Summer", "Autumn"))
+
+```
+
+```{r echo=FALSE}
+# Creating Daytype Bracket (weekday or weekend)
+Traffic_Accidents$Daytype <- factor(Traffic_Accidents$DayOfWeek)
+# Use levels on list for the two brackets
+levels(Traffic_Accidents$Daytype) <- list(
+  'Weekday' = c('Mon','Tue','Wed','Thurs','Fri'),
+  'Weekend' = c('Sat','Sun')
+)
+
+# plot
+Traffic_Accidents %>%
+  filter(!is.na(Traffic_Accidents$Daytype)) %>%
+ggplot(aes(x=Daytype)) + geom_bar(position = "dodge") +
+labs(x="Day Type", y="Total Traffic Accidents", title="Fredericton Traffic Accidents by Day Type") +
+theme_minimal()
+```
+
+There are more drivers during the week, due to work, so not surprisingly there are more accidents during the week.
+
+```{r echo=FALSE}
+# Plotting existing DayOfWeek variable
+# Re-order the days for Sun-Sat week
+Traffic_Accidents$DayOfWeek <- ordered(Traffic_Accidents$DayOfWeek, levels=c("Sun","Mon","Tue","Wed","Thurs","Fri","Sat"))
+
+# Plot
+Traffic_Accidents %>%
+  filter(!is.na(Traffic_Accidents$DayOfWeek)) %>%
+  ggplot(aes(x=DayOfWeek)) + geom_bar(position = "dodge") +
+  labs(x="Day of Week", y="Total Traffic Accidents", title="Fredericton Traffic Accidents by Day of Week") +
+  theme_minimal()
+```
+
+Friday and Thursday, for some reason, are the highest days for accidents.
+
+```{r echo=FALSE}
+# Convert Day_Night to factor
+Traffic_Accidents$Day_Night <- factor(Traffic_Accidents$Day_Night)
+
+# Plotting existing Day or Night accident variable
+Traffic_Accidents %>%
+  drop_na(Day_Night) %>%
+  ggplot(aes(x=Day_Night)) + geom_bar(position = "dodge") +
+  labs(x="Day (D) versus Night (N)", y="Total Traffic Accidents", title="Fredericton Traffic Accidents, Daytime versus Nightime") +
+  theme_minimal()
+```
+
+There are more total accidents during the day, but one would have to assume that due to commuting to work or school that there would be more drivers during the day.
+
+```{r echo=FALSE}
+# Creating Rush Hour Bracket
+rushhour_bin <- function(Hour_ = 0){
+  if(Traffic_Accidents$Daytype == "Weekday" && Hour_ >= 700 && Hour_ <=900)
+    return ("Rush Hour")
+  else if(Traffic_Accidents$Daytype == "Weekday" && Hour_ >= 1200 && Hour_ <=1300)
+    return ("Rush Hour")
+  else if(Traffic_Accidents$Daytype == "Weekday" && Hour_ >= 1600 && Hour_ <=1800)
+    return ("Rush Hour")
+  else
+    return ("Normal Traffic")
+}
+
+# Apply rushhour_bin function
+Traffic_Accidents$Rush_hour <- Traffic_Accidents$Hour_ %>%
+  sapply(rushhour_bin)
+# Convert to factor
+Traffic_Accidents$Rush_hour <- factor(Traffic_Accidents$Rush_hour)
+# Plot
+Traffic_Accidents %>%
+  filter(!is.na(Traffic_Accidents$Rush_hour)) %>%
+  ggplot(aes(x=Rush_hour)) + geom_bar(position = "dodge") +
+  labs(x="Day Type", y="Total Traffic Accidents", title="Fredericton Traffic Accidents by Traffic Conditions") +
+  theme_minimal()
+```
+
+It does seem intuitive that there would be more total accidents during weekday rush hour in Fredericton, that all of the other hours in the week.
+
+# Logistic Regression
+
+Fredericton currently classifies traffic accidents as Severity 1 or 2. Those accidents classified as Severity 2 involve injuries. A new logical classification was created from this variable, and called Severe, so as to focus on the more serious accidents (class 2). For Severe, the default Severity has been recoded 0, and the more severe cases as 1.
+
+```{r echo=FALSE}
+# Create new logical variable Severe for Accidents coded 2 in Severity
+# Default is 1 in Severity, so in Severe we want 1 to become 0 and 2 to become 1.
+Traffic_Accidents$Severe <- Traffic_Accidents$Severity -1
+Traffic_Accidents$Severe = as.logical(Traffic_Accidents$Severe)
+```
+
+Logistic regression is first performed on several pre-existing variables (as factors) in the dataset to predict Severe.
+
+```{r echo=FALSE}
+# First comparing to original variables (as factors)
+glm.accidents.old=glm(Severe ~ as.factor(Day_Night) + as.factor(Month_) + as.factor(DayOfWeek) + as.factor(Hour_), data=Traffic_Accidents, family=binomial)
+```
+
+```{r}
+summary(glm.accidents.old)
+```
+
+Logistic regression is next performed on several new variables/bins (as factors) in the dataset to predict Severe.
+
+```{r echo=FALSE}
+# Then examining the newly created factors
+glm.accidents.new=glm(Severe ~ Traffic_Accidents$Rush_hour + Traffic_Accidents$Daytype +
+                        Traffic_Accidents$Season, data=Traffic_Accidents,family=binomial)
+```
+
+```{r}
+summary(glm.accidents.new)
+```
+
+The smaller number of bins in the "new" variables would appear to be easier to read, and indicate that summer and autumn are the worst time for serious traffic accidents.
+
+# Linear Discriminant Analysis
+
+```{r include=FALSE}
+library(MASS)
+```
+
+First examining the newly created factors. 
+
+```{r echo=FALSE}
+lda.accidents.new=lda(Severe ~ Traffic_Accidents$Rush_hour + Traffic_Accidents$Daytype +
+                     Traffic_Accidents$Season, data=Traffic_Accidents)
+```
+
+```{r}
+lda.accidents.new
+```
+
+Then comparing to original variables (as factors).
+
+```{r echo=FALSE}
+lda.accidents.old=lda(Severe ~ as.factor(Day_Night) + + as.factor(Month_) + as.factor(DayOfWeek) + as.factor(Hour_), data=Traffic_Accidents)
+```
+
+```{r}
+lda.accidents.old
+```
+
